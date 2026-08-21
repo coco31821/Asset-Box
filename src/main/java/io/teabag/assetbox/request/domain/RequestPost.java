@@ -112,5 +112,7 @@ public class RequestPost extends BaseEntity {
         this.preferredStyle = preferredStyle;
         this.engine = engine;
         this.deadline = deadline;
+        // 참조 이미지 재정렬처럼 본문 값이 동일한 수정도 @Version을 증가시킨다.
+        touch();
     }
 }

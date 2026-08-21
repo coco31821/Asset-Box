@@ -28,4 +28,12 @@ public abstract class BaseEntity {
     public void setDeletedAt() {
         this.deletedAt = LocalDateTime.now();
     }
+
+    /**
+     * Aggregate 내부 컬렉션 변경처럼 엔티티 필드 값이 같아도
+     * 동시성 제어를 위해 갱신 이벤트를 발생시켜야 할 때 사용한다.
+     */
+    protected void touch() {
+        this.updatedAt = LocalDateTime.now();
+    }
 }
