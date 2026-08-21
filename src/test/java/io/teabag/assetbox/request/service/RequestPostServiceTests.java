@@ -32,12 +32,14 @@ import io.teabag.assetbox.common.exception.BusinessException;
 import io.teabag.assetbox.file.domain.FilePurpose;
 import io.teabag.assetbox.file.domain.ThumbnailPurpose;
 import io.teabag.assetbox.file.dto.FileAttachmentResponse;
+import io.teabag.assetbox.file.dto.FileUpdateRequest;
 import io.teabag.assetbox.file.service.FileService;
 import io.teabag.assetbox.request.domain.RequestPost;
 import io.teabag.assetbox.request.domain.RequestStatus;
 import io.teabag.assetbox.request.dto.RequestCreateRequest;
 import io.teabag.assetbox.request.dto.RequestListResponse;
 import io.teabag.assetbox.request.dto.RequestResponse;
+import io.teabag.assetbox.request.dto.ReferenceImageSyncRequest;
 import io.teabag.assetbox.request.repository.RequestPostRepository;
 import io.teabag.assetbox.user.constants.Major;
 import io.teabag.assetbox.user.constants.Role;
@@ -448,6 +450,65 @@ class RequestPostServiceTests {
     }
 
     @Nested
+    @DisplayName("요청글 수정 관련")
+    class requestPostUpdate {
+        @Test
+        @DisplayName("기존 파일 유지와 신규 파일 추가 시 최종 순서 정보를 파일 서비스에 전달한다")
+        void updateRequestPost_syncsReferencesByFileIdAndOrder() {
+            Long requestId = 1L;
+            CurrentUser currentUser = currentUser(1L);
+            User user = user(1L);
+            RequestPost requestPost = RequestPost.builder()
+                    .title("기존 제목")
+                    .content("기존 내용")
+                    .requesterId(1L)
+                    .build();
+            ReflectionTestUtils.setField(requestPost, "id", requestId);
+
+            List<FileAttachmentResponse> beforeAttachments = List.of(
+                    new FileAttachmentResponse(11L, "keep.png", "png", "key-11", "url-11", 100L, null, 1L)
+            );
+            List<FileAttachmentResponse> afterAttachments = List.of(
+                    new FileAttachmentResponse(11L, "keep.png", "png", "key-11", "url-11", 100L, null, 1L),
+                    new FileAttachmentResponse(12L, "new.png", "png", "key-12", "url-12", 100L, null, 2L)
+            );
+            ReferenceImageSyncRequest sync = new ReferenceImageSyncRequest(
+                    List.of(new ReferenceImageSyncRequest.ExistingImage(11L, 1L)),
+                    List.of(2L)
+            );
+
+            given(userService.currentUserToUser(currentUser)).willReturn(user);
+            given(requestPostRepository.findByIdOrThrow(requestId)).willReturn(requestPost);
+            given(fileService.getFileAttachmentsByPurpose(FilePurpose.REQUEST_REFERENCE, requestId))
+                    .willReturn(beforeAttachments, afterAttachments);
+
+            requestPostService.update(
+                    requestId,
+                    currentUser,
+                    TestUtil.requestCreateRequestOf(),
+                    null,
+                    List.of(referenceImages().getFirst()),
+                    sync
+            );
+
+            ArgumentCaptor<FileUpdateRequest> requestCaptor = ArgumentCaptor.forClass(FileUpdateRequest.class);
+            then(fileService).should().updateReferenceFiles(
+                    any(),
+                    requestCaptor.capture(),
+                    eq(FilePurpose.REQUEST_REFERENCE),
+                    eq(requestId),
+                    any(UUID.class),
+                    eq(user)
+            );
+            assertThat(requestCaptor.getValue().cFileSortOrders()).containsExactly(2L);
+            assertThat(requestCaptor.getValue().uRequest())
+                    .extracting(update -> update.fileId(), update -> update.sortOrder())
+                    .containsExactly(tuple(11L, 1L));
+            assertThat(requestCaptor.getValue().dFileIds()).isEmpty();
+        }
+    }
+
+    @Nested
     @DisplayName("요청글 삭제 관련")
     class requestPostDelete{
         @Test
@@ -468,9 +529,11 @@ class RequestPostServiceTests {
 
             given(requestPostRepository.findByIdOrThrow(requestPostId))
                     .willReturn(requestPost);
+            CurrentUser currentUser = currentUser(1L);
+            given(userService.currentUserToUser(currentUser)).willReturn(user(1L));
 
             // when
-            requestPostService.deleteRequestPost(requestPostId);
+            requestPostService.deleteRequestPost(requestPostId, currentUser);
 
             // then
             assertThat(requestPost.getDeletedAt()).isNotNull();
@@ -482,6 +545,9 @@ class RequestPostServiceTests {
             then(requestPostRepository)
                     .should(never())
                     .delete(any(RequestPost.class));
+            then(fileService)
+                    .should()
+                    .deleteFilesByPurpose(FilePurpose.REQUEST_REFERENCE, requestPostId);
         }
 
         @Test
@@ -504,9 +570,11 @@ class RequestPostServiceTests {
 
             given(requestPostRepository.findByIdOrThrow(requestPostId))
                     .willReturn(requestPost);
+            CurrentUser currentUser = currentUser(1L);
+            given(userService.currentUserToUser(currentUser)).willReturn(user(1L));
 
             // when & then
-            assertThatThrownBy(() -> requestPostService.deleteRequestPost(requestPostId))
+            assertThatThrownBy(() -> requestPostService.deleteRequestPost(requestPostId, currentUser))
                     .isInstanceOf(BusinessException.class)
                     .hasMessageContaining(ErrorCode.REQUEST_NOT_DELETABLE.getDescription());
 
@@ -529,9 +597,11 @@ class RequestPostServiceTests {
 
             given(requestPostRepository.findByIdOrThrow(requestPostId))
                     .willThrow(new BusinessException(ErrorCode.REQUEST_NOT_FOUND));
+            CurrentUser currentUser = currentUser(1L);
+            given(userService.currentUserToUser(currentUser)).willReturn(user(1L));
 
             // when & then
-            assertThatThrownBy(() -> requestPostService.deleteRequestPost(requestPostId))
+            assertThatThrownBy(() -> requestPostService.deleteRequestPost(requestPostId, currentUser))
                     .isInstanceOf(BusinessException.class)
                     .hasMessageContaining(ErrorCode.REQUEST_NOT_FOUND.getDescription());
 
@@ -542,6 +612,29 @@ class RequestPostServiceTests {
             then(requestPostRepository)
                     .should(never())
                     .delete(any(RequestPost.class));
+        }
+
+        @Test
+        @DisplayName("다른 작성자의 요청글 삭제는 FORBIDDEN 예외가 발생한다")
+        void deleteRequestPost_fail_when_actor_is_not_requester() {
+            Long requestPostId = 1L;
+            RequestPost requestPost = RequestPost.builder()
+                    .title("제목")
+                    .content("내용")
+                    .requesterId(1L)
+                    .build();
+            CurrentUser otherUser = currentUser(2L);
+
+            given(userService.currentUserToUser(otherUser)).willReturn(user(2L));
+            given(requestPostRepository.findByIdOrThrow(requestPostId)).willReturn(requestPost);
+
+            assertThatThrownBy(() -> requestPostService.deleteRequestPost(requestPostId, otherUser))
+                    .isInstanceOf(BusinessException.class)
+                    .hasMessageContaining(ErrorCode.FORBIDDEN.getDescription());
+
+            assertThat(requestPost.getDeletedAt()).isNull();
+            then(fileService).should(never())
+                    .deleteFilesByPurpose(FilePurpose.REQUEST_REFERENCE, requestPostId);
         }
     }
 
@@ -855,6 +948,22 @@ class RequestPostServiceTests {
         @Nested
         @DisplayName("요청글 완료")
         class CompleteRequest {
+
+            @Test
+            @DisplayName("담당자가 없는 REQUESTED 요청글 완료 시 상태 오류를 반환한다")
+            void completeByLinkedPost_fail_when_request_is_not_in_progress() {
+                Long requestId = 1L;
+                RequestPost requestPost = RequestPost.builder()
+                        .title("요청 제목")
+                        .content("요청 내용")
+                        .requesterId(1L)
+                        .build();
+                given(requestPostRepository.findByIdOrThrow(requestId)).willReturn(requestPost);
+
+                assertThatThrownBy(() -> requestPostService.completeByLinkedPost(requestId, 2L, 10L))
+                        .isInstanceOf(BusinessException.class)
+                        .hasMessageContaining(ErrorCode.POST_LINKED_REQUEST_INVALID_STATUS.getDescription());
+            }
 
             @Test
             @DisplayName("IN_PROGRESS 상태 요청글을 완료하면 linkedPostId와 상태를 변경한다")

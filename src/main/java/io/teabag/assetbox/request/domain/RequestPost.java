@@ -15,6 +15,13 @@ public class RequestPost extends BaseEntity {
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    /**
+     * 요청글의 본문·상태·참조 파일 변경을 같은 동시성 단위로 보호한다.
+     * 같은 버전을 읽은 두 수정 요청 중 먼저 반영된 요청만 성공하고, 나머지는 409로 안내한다.
+     */
+    @Version
+    private Long version;
+
     @Column(nullable = false, length = 100)
     private String title;
 
@@ -105,5 +112,7 @@ public class RequestPost extends BaseEntity {
         this.preferredStyle = preferredStyle;
         this.engine = engine;
         this.deadline = deadline;
+        // 참조 이미지 재정렬처럼 본문 값이 동일한 수정도 @Version을 증가시킨다.
+        touch();
     }
 }

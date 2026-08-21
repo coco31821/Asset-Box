@@ -156,7 +156,7 @@ public class RequestPostService {
         }
 
         if (fileUpdateRequest != null) {
-            fileService.updateFiles(
+            fileService.updateReferenceFiles(
                     uploadableReferenceImages,
                     fileUpdateRequest,
                     FilePurpose.REQUEST_REFERENCE,
@@ -244,8 +244,14 @@ public class RequestPostService {
 
     // 요청글 삭제 - REQUESTED 상태때만 삭제 가능
     @Transactional
-    public void deleteRequestPost(Long requestPostId) {
+    public void deleteRequestPost(Long requestPostId, CurrentUser currentUser) {
+        User user = userService.currentUserToUser(currentUser);
         RequestPost requestPost = requestPostRepository.findByIdOrThrow(requestPostId);
+
+        PreConditions.validate(
+                requestPost.getRequesterId().equals(user.getId()),
+                ErrorCode.FORBIDDEN
+        );
 
         PreConditions.validate(
         requestPost.getStatus() == RequestStatus.REQUESTED,
@@ -253,6 +259,7 @@ public class RequestPostService {
         );
 
         requestPost.softDelete();
+        fileService.deleteFilesByPurpose(FilePurpose.REQUEST_REFERENCE, requestPostId);
     }
 
     // 요청글 완료 - IN_PROGRESS 상태때만 완료 가능
@@ -261,13 +268,13 @@ public class RequestPostService {
         RequestPost requestPost = requestPostRepository.findByIdOrThrow(requestId);
 
         PreConditions.validate(
-                requestPost.getAssigneeId().equals(assigneeId),
-                ErrorCode.REQUEST_ASSIGNEE_MISMATCH
+                requestPost.getStatus() == RequestStatus.IN_PROGRESS,
+                ErrorCode.POST_LINKED_REQUEST_INVALID_STATUS
         );
 
         PreConditions.validate(
-                requestPost.getStatus() == RequestStatus.IN_PROGRESS,
-                ErrorCode.POST_LINKED_REQUEST_INVALID_STATUS
+                assigneeId.equals(requestPost.getAssigneeId()),
+                ErrorCode.REQUEST_ASSIGNEE_MISMATCH
         );
 
         PreConditions.validate(
