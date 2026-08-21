@@ -61,8 +61,10 @@ public class SecurityConfig {
                         })
                 )
                 .authorizeHttpRequests(auth -> auth
-                        // 개발 환경에서 필요한거 추후 운영에서 빼야됨
-                        .requestMatchers("/h2-console/**", "/api/files/**" , "/api/actuator/**", "/v3/**" ).permitAll()
+                        // 개발용 인프라 및 API 문서만 익명 접근을 허용한다.
+                        // 파일 API는 업로드 주체와 스토리지 비용에 직접 영향을 주므로
+                        // 아래 EndPoints 정책을 통해 인증된 사용자만 접근할 수 있어야 한다.
+                        .requestMatchers("/h2-console/**", "/api/actuator/**", "/v3/**" ).permitAll()
 
                         // Preflight Request 허용
                         .requestMatchers(CorsUtils::isPreFlightRequest).permitAll()

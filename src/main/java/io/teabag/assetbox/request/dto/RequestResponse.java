@@ -8,6 +8,7 @@ import java.util.List;
 
 public record RequestResponse(
         Long id,
+        Long version,
         String title,
         String content,
         String assetType,
@@ -47,6 +48,7 @@ public record RequestResponse(
     ) {
         return new RequestResponse(
                 requestPost.getId(),
+                requestPost.getVersion(),
                 requestPost.getTitle(),
                 requestPost.getContent(),
                 requestPost.getAssetType(),
