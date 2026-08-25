@@ -25,7 +25,9 @@ import io.teabag.assetbox.file.domain.AssetFileType;
 import io.teabag.assetbox.file.domain.File;
 import io.teabag.assetbox.file.domain.FilePurpose;
 import io.teabag.assetbox.file.dto.FileAttachmentResponse;
+import io.teabag.assetbox.file.dto.FileUpdateRequest;
 import io.teabag.assetbox.file.dto.FileUploadResponse;
+import io.teabag.assetbox.file.dto.FileURequest;
 import io.teabag.assetbox.file.repository.FileRepository;
 import io.teabag.assetbox.user.constants.Major;
 import io.teabag.assetbox.user.domain.User;
@@ -38,6 +40,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.multipart.MultipartFile;
 
 @ExtendWith(MockitoExtension.class)
@@ -506,6 +509,125 @@ class FileServiceTest {
         then(s3FileStorageService).should(never()).deleteAll(any());
     }
 
+    @Test
+    @DisplayName("참조 이미지 10개를 재정렬하면 S3 업로드와 삭제를 호출하지 않는다")
+    void updateReferenceFiles_reordersExistingFilesWithoutS3Calls() {
+        // given
+        Long purposeId = 1L;
+        List<File> existingFiles = requestReferenceFiles(10);
+        List<FileURequest> reorderedFiles = existingFiles.stream()
+            .map(file -> new FileURequest(file.getId(), 11L - file.getUploadOrder()))
+            .toList();
+        List<File> reorderedResult = existingFiles.reversed();
+        FileUpdateRequest request = new FileUpdateRequest(List.of(), reorderedFiles, List.of());
+
+        given(fileRepository.countByPurposeAndPurposeId(FilePurpose.REQUEST_REFERENCE, purposeId)).willReturn(10L);
+        given(fileRepository.findAllByIdInAndPurposeAndPurposeId(
+            reorderedFiles.stream().map(FileURequest::fileId).toList(),
+            FilePurpose.REQUEST_REFERENCE,
+            purposeId
+        )).willReturn(existingFiles);
+        existingFiles.forEach(file -> given(fileRepository.findByIdAndPurposeAndPurposeId(
+            file.getId(), FilePurpose.REQUEST_REFERENCE, purposeId
+        )).willReturn(Optional.of(file)));
+        given(fileRepository.findByPurposeAndPurposeIdAndDeletedAtIsNullOrderByUploadOrderAsc(
+            FilePurpose.REQUEST_REFERENCE,
+            purposeId
+        )).willReturn(reorderedResult);
+
+        // when
+        fileService.updateReferenceFiles(
+            List.of(), request, FilePurpose.REQUEST_REFERENCE, purposeId, UUID.randomUUID(), createUser()
+        );
+
+        // then
+        then(s3FileStorageService).should(never()).upload(any(MultipartFile.class), anyString());
+        then(s3FileStorageService).should(never()).delete(anyString());
+        assertThat(existingFiles)
+            .extracting(File::getUploadOrder)
+            .containsExactly(10L, 9L, 8L, 7L, 6L, 5L, 4L, 3L, 2L, 1L);
+    }
+
+    @Test
+    @DisplayName("참조 이미지 10개 중 2개를 교체하면 신규 파일만 S3에 업로드한다")
+    void updateReferenceFiles_uploadsOnlyTwoReplacementFiles() {
+        // given
+        Long purposeId = 1L;
+        List<File> existingFiles = requestReferenceFiles(10);
+        List<File> retainedFiles = existingFiles.subList(0, 8);
+        List<File> removedFiles = existingFiles.subList(8, 10);
+        List<FileURequest> retainedRequests = retainedFiles.stream()
+            .map(file -> new FileURequest(file.getId(), file.getUploadOrder()))
+            .toList();
+        List<MultipartFile> newFiles = List.of(
+            new MockMultipartFile("files", "new-9.png", "image/png", "new-9".getBytes()),
+            new MockMultipartFile("files", "new-10.png", "image/png", "new-10".getBytes())
+        );
+        FileUpdateRequest request = new FileUpdateRequest(
+            List.of(9L, 10L),
+            retainedRequests,
+            removedFiles.stream().map(File::getId).toList()
+        );
+        List<File> finalFiles = List.of(
+            retainedFiles.get(0), retainedFiles.get(1), retainedFiles.get(2), retainedFiles.get(3),
+            retainedFiles.get(4), retainedFiles.get(5), retainedFiles.get(6), retainedFiles.get(7),
+            requestReferenceFile(11L, 9L), requestReferenceFile(12L, 10L)
+        );
+
+        given(fileRepository.countByPurposeAndPurposeId(FilePurpose.REQUEST_REFERENCE, purposeId)).willReturn(10L);
+        given(fileRepository.findAllByIdInAndPurposeAndPurposeId(
+            retainedRequests.stream().map(FileURequest::fileId).toList(),
+            FilePurpose.REQUEST_REFERENCE,
+            purposeId
+        )).willReturn(retainedFiles);
+        given(fileRepository.save(any(File.class))).willAnswer(invocation -> invocation.getArgument(0));
+        retainedFiles.forEach(file -> given(fileRepository.findByIdAndPurposeAndPurposeId(
+            file.getId(), FilePurpose.REQUEST_REFERENCE, purposeId
+        )).willReturn(Optional.of(file)));
+        given(fileRepository.findAllByIdInAndPurposeAndPurposeId(
+            removedFiles.stream().map(File::getId).toList(), FilePurpose.REQUEST_REFERENCE, purposeId
+        )).willReturn(removedFiles);
+        given(fileRepository.findByPurposeAndPurposeIdAndDeletedAtIsNullOrderByUploadOrderAsc(
+            FilePurpose.REQUEST_REFERENCE,
+            purposeId
+        )).willReturn(finalFiles);
+
+        // when
+        fileService.updateReferenceFiles(
+            newFiles, request, FilePurpose.REQUEST_REFERENCE, purposeId, UUID.randomUUID(), createUser()
+        );
+
+        // then
+        then(s3FileStorageService).should(times(2)).upload(any(MultipartFile.class), anyString());
+        then(s3FileStorageService).should(never()).delete(anyString());
+        assertThat(removedFiles).allSatisfy(file -> {
+            assertThat(file.getDeletedAt()).isNotNull();
+            assertThat(file.getPurgeAt()).isAfter(file.getDeletedAt());
+        });
+    }
+
+    @Test
+    @DisplayName("참조 파일을 삭제하면 즉시 S3를 삭제하지 않고 retention을 예약한다")
+    void deleteRequestReferenceFiles_defersS3DeletionUntilRetention() {
+        // given
+        File first = requestReferenceFile(1L, 1L);
+        File second = requestReferenceFile(2L, 2L);
+        given(fileRepository.findByPurposeAndPurposeIdAndDeletedAtIsNullOrderByUploadOrderAsc(
+            FilePurpose.REQUEST_REFERENCE,
+            1L
+        )).willReturn(List.of(first, second));
+
+        // when
+        fileService.deleteFilesByPurpose(FilePurpose.REQUEST_REFERENCE, 1L);
+
+        // then
+        then(s3FileStorageService).should(never()).delete(anyString());
+        assertThat(first.getDeletedAt()).isNotNull();
+        assertThat(second.getDeletedAt()).isNotNull();
+        assertThat(first.getPurgeAt()).isAfter(first.getDeletedAt());
+        assertThat(second.getPurgeAt()).isAfter(second.getDeletedAt());
+    }
+
     private User createUser() {
         return User.builder()
             .email("test@naver.com")
@@ -535,6 +657,29 @@ class FileServiceTest {
             .fileType(fileType)
             .uploadBatchId("9c54f9e1-0c2a-43cb-a70f-97b9a0b3b123")
             .build();
+    }
+
+    private List<File> requestReferenceFiles(int count) {
+        return java.util.stream.LongStream.rangeClosed(1, count)
+            .mapToObj(id -> requestReferenceFile(id, id))
+            .toList();
+    }
+
+    private File requestReferenceFile(Long id, Long uploadOrder) {
+        File file = File.builder()
+            .originalName("reference-" + id + ".png")
+            .s3Key("assets/request_reference/1/reference/" + id + ".png")
+            .extension("png")
+            .sizeBytes(1024L)
+            .purpose(FilePurpose.REQUEST_REFERENCE)
+            .purposeId(1L)
+            .uploadedBy(createUser())
+            .uploadOrder(uploadOrder)
+            .fileType(AssetFileType.REFERENCE)
+            .uploadBatchId("9c54f9e1-0c2a-43cb-a70f-97b9a0b3b123")
+            .build();
+        ReflectionTestUtils.setField(file, "id", id);
+        return file;
     }
 
     private byte[] createZipBytes(ZipTestEntry... entries) throws Exception {
