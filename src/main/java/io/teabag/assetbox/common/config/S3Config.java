@@ -7,8 +7,11 @@ import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.S3ClientBuilder;
 import software.amazon.awssdk.services.s3.S3Configuration;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
+
+import java.net.URI;
 
 @Configuration
 public class S3Config {
@@ -21,26 +24,43 @@ public class S3Config {
     @Value("${spring.cloud.aws.region.static}")
     private String region;
 
+    @Value("${custom.s3.endpoint:}")
+    private String endpoint;
+
 
     @Bean
     public S3Client s3client() {
         AwsBasicCredentials awsCreds = AwsBasicCredentials.create(accessKey, secretKey);
-        return S3Client.builder()
+        S3ClientBuilder builder = S3Client.builder()
                 .region(Region.of(region))
                 .credentialsProvider(StaticCredentialsProvider.create(awsCreds))
                 .serviceConfiguration(
                         S3Configuration.builder()
                                 .pathStyleAccessEnabled(true)
-                                .build())
-                .build();
+                                .build());
+        applyEndpointOverride(builder);
+        return builder.build();
     }
 
     @Bean
     public S3Presigner s3presigner() {
         AwsBasicCredentials awsCreds = AwsBasicCredentials.create(accessKey, secretKey);
-        return S3Presigner.builder()
+        S3Presigner.Builder builder = S3Presigner.builder()
                 .region(Region.of(region))
-                .credentialsProvider(StaticCredentialsProvider.create(awsCreds))
-                .build();
+                .credentialsProvider(StaticCredentialsProvider.create(awsCreds));
+        applyEndpointOverride(builder);
+        return builder.build();
+    }
+
+    private void applyEndpointOverride(S3ClientBuilder builder) {
+        if (!endpoint.isBlank()) {
+            builder.endpointOverride(URI.create(endpoint));
+        }
+    }
+
+    private void applyEndpointOverride(S3Presigner.Builder builder) {
+        if (!endpoint.isBlank()) {
+            builder.endpointOverride(URI.create(endpoint));
+        }
     }
 }

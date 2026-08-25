@@ -65,6 +65,11 @@ dependencies {
     testCompileOnly 'org.projectlombok:lombok'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
     testAnnotationProcessor 'org.projectlombok:lombok'
+
+    // Integration test containers
+    testImplementation 'org.testcontainers:testcontainers-junit-jupiter:2.0.5'
+    testImplementation 'org.testcontainers:testcontainers-mysql:2.0.5'
+    testImplementation 'org.testcontainers:testcontainers-localstack:2.0.5'
 }
 
 tasks.named('test') {
